@@ -112,7 +112,7 @@ resource_target.body("Hi!");
 // \r\n
 ```
 
-Regex URI:
+Simple Regex URI:
 
 ```rust
 let server = TestServer::new().unwrap();
@@ -124,6 +124,20 @@ let resource = server.create_resource("/hello/[0-9]/[A-z]/.*");
 // \r\n
 
 ```
+Complex regex with custom capture groups:
+
+```rust
+let server = TestServer::new().unwrap();
+let resource = server.create_resource_with_regex("/hello/(?<id>[0-9])/[A-z]/.*");
+resource.body("id: {path.id}");
+
+// request: GET /hello/8/b/doesntmatter-hehe
+// HTTP/1.1 200 Ok\r\n
+// \r\n
+// id: 8
+
+```
+
 
 Check  [/tests/integration_test.rs](tests/integration_test.rs) for more usage examples.
 
