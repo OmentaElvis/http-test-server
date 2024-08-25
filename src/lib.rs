@@ -123,7 +123,7 @@
 //!
 //!
 //! ```
-//! Regex URI:
+//! Simple Regex URI:
 //!
 //! ```
 //! # extern crate http_test_server;
@@ -136,6 +136,23 @@
 //!
 //! // HTTP/1.1 200 Ok\r\n
 //! // \r\n
+//!
+//! ```
+//! Complex regex with custom capture groups
+//!
+//! ```
+//! # extern crate http_test_server;
+//! # use http_test_server::{TestServer, Resource};
+//! # use http_test_server::http::{Status, Method};
+//! let server = TestServer::new().unwrap();
+//! let resource = server.create_resource_with_regex("/hello/(?<id>[0-9])/[A-z]/.*");
+//! resource.body("id: {path.id}");
+//!
+//! // request: GET /hello/8/b/doesntmatter-hehe
+//!
+//! // HTTP/1.1 200 Ok\r\n
+//! // \r\n
+//! // id: 8
 //!
 //! ```
 //!
@@ -166,6 +183,8 @@ use std::collections::HashMap;
 use http::Method;
 use http::Status;
 pub use resource::Resource;
+use resource::URIParameters;
+use regex::Regex;
 
 type ServerResources = Arc<Mutex<Vec<Resource>>>;
 type RequestsTX = Arc<Mutex<Option<mpsc::Sender<Request>>>>;
@@ -276,6 +295,55 @@ impl TestServer {
         resources.push(resource.clone());
 
         resource
+    }
+    /// Creates a new resource but treats the uri as valid regex. By default resources answer "200 Ok".
+    /// Suitable for use with [`Resource::body_fn`] to do more complex pattern matching and capture value extraction.
+    /// Panics if the regex compiler encounters an error.
+    ///
+    /// Check [`Resource`] for all possible configurations.
+    ///
+    /// ```
+    ///# extern crate http_test_server;
+    ///# use http_test_server::{TestServer, Resource};
+    /// let server = TestServer::new().unwrap();
+    /// // for requests only accepting '/user/<uuid>' e.g. /user/e08d4d62-6252-11ef-b9c4-6f49c4a9f2f6
+    /// let resource = server.create_resource_with_regex(r"/user/[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}");
+    /// ```
+    /// 
+    /// # Example
+    /// Extract section of the url that matches a particular pattern and use it to generate body data
+    ///
+    /// ```
+    /// # use http_test_server::TestServer;
+    /// # let server = TestServer::new().unwrap();
+    /// // matches all uri with /{group_id}/{artifact_id}/maven-metadata.xml
+    /// // the difference with `create_resource` is group_id may contain any number of '/' e.g /com/example/module-a/maven-metadata.xml
+    /// let resource = server.create_resource_with_regex("^/(?<group_id>.*)/(?<artifact_id>.*)/maven-metadata.xml$");
+    /// resource.body_fn(|params| {
+    ///     let group_id = params.query.get("group_id").unwrap();
+    ///     let artifact_id = params.query.get("artifact_id").unwrap();
+    ///     assert_eq!(group_id, "com/example");
+    ///     assert_eq!(artifact_id, "module-a");
+    ///     // convert to package name
+    ///     let group_id = group_id.replace('/', ".");
+    ///     assert_eq!(group_id.as_str(), "com.example");
+    ///     
+    ///     return format!("<metadata><group-id>{}</group-id><artifact-id>{}</artifact-id></metadata>", group_id, artifact_id)
+    ///
+    /// });
+    ///
+    /// ```
+    /// [`Resource`]: struct.Resource.html
+    pub fn create_resource_with_regex(&self, uri: &str) -> Resource {
+        let mut resources = self.resources.lock().unwrap();
+        let re = Regex::new(uri).unwrap();
+        let params: Vec<String> = re.capture_names().skip(1).filter(|n| n.is_some()).map(|n| n.unwrap().to_string()).collect();
+        let resource = Resource::new_with_regex(uri, Regex::new(uri).unwrap(), URIParameters::new(params, HashMap::new()));
+
+        resources.push(resource.clone());
+
+        resource
+        
     }
 
     /// Retrieves information on new requests.
@@ -552,6 +620,21 @@ mod tests {
 
         assert_eq!(line, "HTTP/1.1 200 Ok\r\n\r\nUser: 123 Thing: abc Sth: Hello!");
     }
+    #[test]
+    fn should_return_resource_body_with_regex_params() {
+        let server = TestServer::new().unwrap();
+        let resource = server.create_resource_with_regex("^/(?<group_id>.*)/(?<artifact_id>.*)/maven-metadata.xml$");
+
+        resource.status(Status::OK).body("{path.group_id}:{path.artifact_id}");
+        
+        let stream = make_request(server.port(), "/com/example/http/module-a/maven-metadata.xml");
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_to_string(&mut line).unwrap();
+
+        assert_eq!(line, "HTTP/1.1 200 Ok\r\n\r\ncom/example/http:module-a");
+    }
 
     #[test]
     fn should_work_with_regex_uri() {
@@ -567,6 +650,29 @@ mod tests {
         reader.read_to_string(&mut line).unwrap();
 
         assert_eq!(line, "HTTP/1.1 200 Ok\r\n\r\n<some body>");
+    }
+    #[test]
+    fn should_work_with_full_regex_uri() {
+        let server = TestServer::new().unwrap();
+        let resource = server.create_resource_with_regex("^/(?<group_id>.*)/(?<artifact_id>.*)/maven-metadata.xml$");
+
+        resource.method(Method::GET).status(Status::OK)
+            .body_fn(|param| {
+                let group_id = param.path.get("group_id").unwrap();
+                let artifact_id = param.path.get("artifact_id").unwrap();
+
+                format!("{group_id}:{artifact_id}")
+            });
+        
+
+        let stream = make_request(server.port(), "/com/example/http/module-a/maven-metadata.xml");
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_to_string(&mut line).unwrap();
+
+        assert_eq!(line, "HTTP/1.1 200 Ok\r\n\r\ncom/example/http:module-a");
+        
     }
 
 

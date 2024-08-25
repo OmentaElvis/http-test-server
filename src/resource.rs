@@ -63,10 +63,17 @@ pub struct Resource {
     is_stream: Arc<AtomicBool>,
     stream_listeners: Arc<Mutex<Vec<mpsc::Sender<String>>>>
 }
-
-struct URIParameters {
+pub(crate) struct URIParameters {
     path: Vec<String>,
     query: HashMap<String, String>
+}
+impl URIParameters {
+    pub fn new(path: Vec<String>, query: HashMap<String, String>) -> Self {
+        Self {
+            path,
+            query
+        }
+    }
 }
 
 type BodyBuilder = Box<dyn Fn(RequestParameters) -> String + Send>;
@@ -74,7 +81,9 @@ type BodyBuilder = Box<dyn Fn(RequestParameters) -> String + Send>;
 impl Resource {
     pub(crate) fn new(uri: &str) -> Resource {
         let (uri_regex, params) = create_uri_regex(uri);
-
+        Self::new_with_regex(uri, uri_regex, params)
+    }
+    pub(crate) fn new_with_regex(uri: &str, uri_regex: Regex, params: URIParameters) -> Resource {
         Resource {
             uri: String::from(uri),
             uri_regex,
